@@ -7,15 +7,20 @@ from src.IR_models.sparse_model import sparse
 from pathlib import Path
 
 data_sets = ["trec-covid", "quora", "scidocs", "fiqa", "msmarco", "nq"]
-file_path = Path(__file__).parent
+try:
+    file_path = Path(__file__).parent
+except:
+    file_path = Path(".")
+data_path = file_path / "data"
+save_path = data_path / "scores"
 def _run_dataset(ds):
 
     exps = {
-        "sparse": sparse.BM25Expert(data_path=file_path / "data"),
-        "dense": dense.DenseExpert(data_path=file_path / "data")
+        "sparse": sparse.BM25Expert(data_path=data_path),
+        "dense": dense.DenseExpert(data_path=data_path)
     }
     moe = experts.Experts(**exps)
-    moe.run_pipeline(corpus_name=ds, top_k=25, save_path=Path("./test_outputs_scores"))
+    moe.run_pipeline(corpus_name=ds, top_k=25, save_path=save_path)
     return ds
 
 if __name__ == "__main__":

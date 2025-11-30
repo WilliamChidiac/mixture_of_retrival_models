@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, List, Union, Optional, Tuple
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 class ExpertsResult:
     """
@@ -120,13 +121,14 @@ class Experts:
             
             
             
-    def search_query(self, query: Union[str, List[str]], top_k: int = 100) -> ExpertsResult:
+    def search_query(self, query: Union[str, List[str]], top_k: int = 100, batch_size: int = 100) -> ExpertsResult:
         """
         Search the query using all experts.
 
         Args:
             query (Union[str, List[str]]): The input query string or list of query strings.
             top_k (int): Number of top documents to retrieve from each expert. Defaults to 100.
+            batch_size (int): Number of queries to process at once. Defaults to 100.
 
         Returns:
             ExpertsResult: The combined search results from all experts.
@@ -138,12 +140,18 @@ class Experts:
             
         # Perform search for all experts
         # results: expert_name -> list of list of doc_ids
-        raw_results = {}
-        for name, expert in self.experts.items():
-            raw_results[name] = expert.search(queries, top_k=top_k)
-            
+        raw_results = {name: [] for name in self.experts}
+        
         num_queries = len(queries)
         
+        # Batch processing with tqdm
+        for name, expert in self.experts.items():
+            print(f"Searching with expert: {name}")
+            for i in tqdm(range(0, num_queries, batch_size), desc="Searching queries"):
+                batch_queries = queries[i : i + batch_size]
+                batch_res = expert.search(batch_queries, top_k=top_k)
+                raw_results[name].extend(batch_res)
+            
         queries_rank_matrices = []
         queries_doc_ids = []
         
@@ -173,7 +181,7 @@ class Experts:
             
         return ExpertsResult(self.expert_names, queries_rank_matrices, queries_doc_ids)
     
-    def scoring_function(self, queries: Union[str, List[str]], ground_truth: List[Dict[str, int]], top_k: int = 100) -> Tuple[Dict[int, np.ndarray], List[str]]:
+    def scoring_function(self, queries: Union[str, List[str]], ground_truth: List[Dict[str, int]], top_k: int = 100, batch_size: int = 100) -> Tuple[Dict[int, np.ndarray], List[str]]:
         """
         Get the scoring function outputs from all experts for the given queries.
 
@@ -181,31 +189,42 @@ class Experts:
             queries (Union[str, List[str]]): The input query string or list of query strings.
             ground_truth (List[Dict[str, int]]): List of ground truth dictionaries (one per query).
             top_k (int): Top K documents to consider.
+            batch_size (int): Batch size for search.
         Returns:
             Tuple[Dict[int, np.ndarray], List[str]]: 
                 Item 1: Dictionary mapping query index to an array of scores (one per expert).
                 Item 2: List of expert names corresponding to the score array indices.
         """
-        results = self.search_query(queries, top_k=top_k)
+        results = self.search_query(queries, top_k=top_k, batch_size=batch_size)
         return results.compute_score(ground_truth, k=top_k)
     
-    def run_pipeline(self, corpus_name: str, top_k: int, save_path: Path) -> None:
+    def run_pipeline(self, corpus_name: str, top_k: int, save_path: Path, batch_size: int = 100) -> None:
         """generates the score dataframes for a give corpus. The (query, scores) pair can be used to train the router model.
 
         Args:
             corpus_name (str): name of the corpus
             top_k (int): number of top documents to consider
             save_path (Path): location to save the datasets
+            batch_size (int): number of queries to process at once to avoid OOM.
         """
         softmax = lambda x: np.exp(x) / np.sum(np.exp(x)) if np.sum(np.exp(x)) > 0 else x
         l1_normalization = lambda x: x / np.sum(x) if np.sum(x) > 0 else x
         if self.datahandler is None:
             self.datahandler = DataHandler(corpus_name)
-        queries = self.datahandler.load_queries()
+            
+        # Load raw data
+        raw_queries = self.datahandler.load_queries()
         ground_truth = self.datahandler.load_qrels()
-        queries = {q_id: data["text"] for q_id, data in queries.items()}
+        
+        # Prepare lists aligned by query ID
+        query_ids = list(raw_queries.keys())
+        queries_text = [raw_queries[qid]["text"] for qid in query_ids]
+        gt_list = [ground_truth.get(qid, {}) for qid in query_ids]
+        
         self.build_indices(corpus_name, force=False, save=True)
-        results, ret_expert_names = self.scoring_function(queries=list(queries.values()), ground_truth=list(ground_truth.values()), top_k=top_k)
+        
+        results, ret_expert_names = self.scoring_function(queries=queries_text, ground_truth=gt_list, top_k=top_k, batch_size=batch_size)
+        
         df = pd.DataFrame.from_dict(results, orient='index', columns=ret_expert_names)
         # Normalize scores
         nomrlized_columns = []
@@ -224,15 +243,14 @@ class Experts:
         total_df = pd.concat([df, df_norm], axis=1)
 
         # add query text
-        queries_texts = list(queries.values())
-        query_texts = {idx: queries_texts[idx] for idx in range(len(queries_texts))}
-        total_df.insert(0, 'query', pd.Series(query_texts))
+        query_texts_map = {idx: queries_text[idx] for idx in range(len(queries_text))}
+        total_df.insert(0, 'query', pd.Series(query_texts_map))
         # Save to file
         save_path = save_path / f"{corpus_name}_topk{top_k}_scores.csv"
         save_path.parent.mkdir(parents=True, exist_ok=True)
         total_df.to_csv(save_path, index_label='query_idx')
-    
-        
+
+
 
 
 
