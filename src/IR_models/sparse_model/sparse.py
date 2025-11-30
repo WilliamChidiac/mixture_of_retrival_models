@@ -9,6 +9,7 @@ import numpy as np
 from typing import List, Dict, Any, Union
 from pathlib import Path
 from ...collections.data_utils import DataHandler
+from concurrent.futures import ThreadPoolExecutor
 
 # Ensure nltk data is downloaded
 nltk_data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../.venv", "nltk_data")
@@ -143,8 +144,37 @@ class BM25Expert(IRExpert):
             List[List[str]]: List of lists of top_k document IDs ranked by relevance for each query.
         """
         tokenized_query = self.tokenize(query)
-        scores = np.array([self.bm25.get_scores(q) for q in tokenized_query])
-        top_k_indices = np.argsort(scores, axis=1)[:, ::-1][:, :top_k]
+        
+        # Accelerate scoring using ThreadPoolExecutor for batch processing
+        # BM25Okapi.get_scores is slow (Python loop over docs), but releases GIL for numpy ops.
+        # Parallelizing over queries helps significantly.
+        if len(tokenized_query) > 1:
+            with ThreadPoolExecutor() as executor:
+                scores_list = list(executor.map(self.bm25.get_scores, tokenized_query))
+            scores = np.array(scores_list)
+        else:
+            scores = np.array([self.bm25.get_scores(q) for q in tokenized_query])
+            
+        # Accelerate top-k selection using argpartition instead of argsort
+        # argsort is O(N log N), argpartition is O(N)
+        n_docs = len(self.corpus_ids)
+        if top_k < n_docs:
+            # Get indices of top k elements (unsorted)
+            # argpartition puts the k-th largest element at index -top_k
+            unsorted_top_k_indices = np.argpartition(scores, -top_k, axis=1)[:, -top_k:]
+            
+            # To sort the top k, we gather the scores
+            row_indices = np.arange(scores.shape[0])[:, None]
+            top_k_scores = scores[row_indices, unsorted_top_k_indices]
+            
+            # Sort these small arrays (k is small)
+            sorted_local_indices = np.argsort(top_k_scores, axis=1)[:, ::-1]
+            
+            # Map back to original indices
+            top_k_indices = unsorted_top_k_indices[row_indices, sorted_local_indices]
+        else:
+            top_k_indices = np.argsort(scores, axis=1)[:, ::-1][:, :top_k]
+
         corpus_ids_array = np.array(self.corpus_ids)
         top_k_doc_ids = corpus_ids_array[top_k_indices]
         return top_k_doc_ids.tolist()
