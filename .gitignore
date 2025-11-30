@@ -1,3 +1,6 @@
+# Data files and directories to be ignored by Git for Python projects
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

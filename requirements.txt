@@ -1,0 +1,10 @@
+torch
+transformers
+beir
+sentence-transformers
+rank_bm25
+faiss-cpu
+numpy
+scikit-learn
+tqdm
+nltk
