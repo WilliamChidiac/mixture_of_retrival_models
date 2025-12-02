@@ -6,10 +6,11 @@ import nltk
 from nltk.tokenize import word_tokenize
 import tqdm
 import numpy as np
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Tuple
 from pathlib import Path
 from ...collections.data_utils import DataHandler
 from concurrent.futures import ThreadPoolExecutor
+import gc
 
 # Ensure nltk data is downloaded
 nltk_data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../.venv", "nltk_data")
@@ -36,6 +37,7 @@ class BM25Expert(IRExpert):
         self.bm25 = None
         self.corpus_ids = []
         self.doc_id_to_index = {}
+        self.inverted_index = {} # Optimization: term -> (doc_indices, frequencies)
         self.data_path = data_path
         self.save_path = data_path / "indexed_data" / "sparse" if data_path else None
         
@@ -89,9 +91,42 @@ class BM25Expert(IRExpert):
             
         self.bm25 = BM25Okapi(tokenized_corpus)
         self.doc_id_to_index = {doc_id: i for i, doc_id in enumerate(self.corpus_ids)}
+        
+        # Build inverted index for optimization
+        self._build_inverted_index()
+        
+        # MEMORY OPTIMIZATION:
+        # rank_bm25 stores doc_freqs (List[Dict[str, int]]) which is huge.
+        # Since we use inverted_index for scoring, we don't need doc_freqs anymore.
+        # Clearing it saves massive amount of RAM and allows pickling without OOM.
+        print("Optimizing memory usage...")
+        self.bm25.doc_freqs = []
+        gc.collect()
+        
         print("BM25 index built.")
         if save:
             self.save_index(path=self.save_path / corpus_name if self.save_path else None)
+
+    def _build_inverted_index(self):
+        """
+        Builds an inverted index from the BM25 object to speed up scoring.
+        Structure: {term: (numpy_array_of_doc_indices, numpy_array_of_freqs)}
+        """
+        print("Building inverted index for optimization...")
+        self.inverted_index = {}
+        # self.bm25.doc_freqs is a list of dicts: [{term: freq}, ...] corresponding to docs
+        for doc_idx, doc_dict in enumerate(tqdm.tqdm(self.bm25.doc_freqs, desc="Inverting")):
+            for term, freq in doc_dict.items():
+                if term not in self.inverted_index:
+                    self.inverted_index[term] = [[], []] # indices, freqs
+                self.inverted_index[term][0].append(doc_idx)
+                self.inverted_index[term][1].append(freq)
+        
+        # Convert lists to numpy arrays for vectorization
+        for term in self.inverted_index:
+            indices = np.array(self.inverted_index[term][0], dtype=np.int32)
+            freqs = np.array(self.inverted_index[term][1], dtype=np.int32)
+            self.inverted_index[term] = (indices, freqs)
 
     def save_index(self, path: Path = None) -> None:
         """
@@ -106,12 +141,17 @@ class BM25Expert(IRExpert):
             print("Skipping save: No path specified to save the index.")
             return
         os.makedirs(path, exist_ok=True)
+        
+        # Save components individually to manage memory better
         with open(path / "bm25.pkl", "wb") as f:
             pickle.dump(self.bm25, f)
         with open(path / "corpus_ids.pkl", "wb") as f:
             pickle.dump(self.corpus_ids, f)
         with open(path / "doc_id_to_index.pkl", "wb") as f:
             pickle.dump(self.doc_id_to_index, f)
+        # Save inverted index
+        with open(path / "inverted_index.pkl", "wb") as f:
+            pickle.dump(self.inverted_index, f)
         print(f"BM25 index saved to {path}")
 
     def load_index(self, path: Path) -> None:
@@ -130,7 +170,42 @@ class BM25Expert(IRExpert):
                 self.doc_id_to_index = pickle.load(f)
         else:
              self.doc_id_to_index = {doc_id: i for i, doc_id in enumerate(self.corpus_ids)}
+        
+        # Load inverted index if exists, else rebuild
+        if (path / "inverted_index.pkl").exists():
+            with open(path / "inverted_index.pkl", "rb") as f:
+                self.inverted_index = pickle.load(f)
+        else:
+            # If we loaded a slim BM25 (empty doc_freqs), we can't rebuild inverted index.
+            if not self.bm25.doc_freqs:
+                raise ValueError("Loaded BM25 index has empty doc_freqs and no inverted_index.pkl found. Please rebuild index with force=True.")
+            self._build_inverted_index()
+            
         print(f"BM25 index loaded from {path}")
+
+    def _get_scores_fast(self, query_tokens: List[str]) -> np.ndarray:
+        """
+        Optimized scoring using inverted index and numpy vectorization.
+        Avoids iterating over the entire corpus.
+        """
+        scores = np.zeros(self.bm25.corpus_size)
+        doc_len = np.array(self.bm25.doc_len)
+        
+        for q in query_tokens:
+            if q not in self.inverted_index:
+                continue
+            
+            doc_indices, freqs = self.inverted_index[q]
+            
+            # BM25 calculation for this term across all relevant docs
+            idf = self.bm25.idf.get(q, 0)
+            numerator = freqs * (self.bm25.k1 + 1)
+            denominator = freqs + self.bm25.k1 * (1 - self.bm25.b + self.bm25.b * doc_len[doc_indices] / self.bm25.avgdl)
+            term_scores = idf * (numerator / denominator)
+            
+            scores[doc_indices] += term_scores
+            
+        return scores
 
     def search(self, query: Union[str, List[str]], top_k: int = 10) -> List[List[str]]:
         """
@@ -145,15 +220,13 @@ class BM25Expert(IRExpert):
         """
         tokenized_query = self.tokenize(query)
         
-        # Accelerate scoring using ThreadPoolExecutor for batch processing
-        # BM25Okapi.get_scores is slow (Python loop over docs), but releases GIL for numpy ops.
-        # Parallelizing over queries helps significantly.
+        # Use optimized scoring
         if len(tokenized_query) > 1:
             with ThreadPoolExecutor() as executor:
-                scores_list = list(executor.map(self.bm25.get_scores, tokenized_query))
+                scores_list = list(executor.map(self._get_scores_fast, tokenized_query))
             scores = np.array(scores_list)
         else:
-            scores = np.array([self.bm25.get_scores(q) for q in tokenized_query])
+            scores = np.array([self._get_scores_fast(q) for q in tokenized_query])
             
         # Accelerate top-k selection using argpartition instead of argsort
         # argsort is O(N log N), argpartition is O(N)
@@ -191,14 +264,10 @@ class BM25Expert(IRExpert):
             np.ndarray: Array of scores corresponding to the doc_ids.
         """
         tokenized_query = self.tokenize(query)
-        # rank_bm25 doesn't support efficient batch scoring for specific docs easily without accessing internal structures
-        # But we can get all scores and pick. Or calculate manually.
-        # get_scores calculates for all.
-        # If len(doc_ids) is small, maybe manual calculation is faster?
-        # BM25Okapi: sum(IDF * ((f * (k1 + 1)) / (f + k1 * (1 - b + b * |D| / avgdl))))
-        # It's easier to just use get_scores() which is vectorized, and select indices.
         
-        all_scores = self.bm25.get_scores(tokenized_query)
+        # Use optimized scoring
+        all_scores = self._get_scores_fast(tokenized_query[0])
+        
         scores = []
         for doc_id in doc_ids:
             if doc_id in self.doc_id_to_index:
@@ -217,7 +286,7 @@ if __name__ == "__main__":
     }
     
     bm25_expert = BM25Expert()
-    bm25_expert.build_index(corpus)
+    bm25_expert.build_index("test_corpus", corpus=corpus, save=False)
     
     query = "cat story"
     results = bm25_expert.search(query, top_k=2)

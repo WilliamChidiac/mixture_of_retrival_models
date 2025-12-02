@@ -6,21 +6,22 @@ from src.IR_models.dense_model import dense
 from src.IR_models.sparse_model import sparse
 from pathlib import Path
 
-data_sets = ["trec-covid", "quora", "scidocs", "fiqa", "msmarco", "nq"]
+data_sets = [ "trec-covid", "quora", "fiqa", "scidocs",]
 try:
     file_path = Path(__file__).parent
 except:
     file_path = Path(".")
 data_path = file_path / "data"
 save_path = data_path / "scores"
-def _run_dataset(ds):
+def _run_dataset(ds, dataset="test"):
 
     exps = {
         "sparse": sparse.BM25Expert(data_path=data_path),
         "dense": dense.DenseExpert(data_path=data_path)
     }
     moe = experts.Experts(**exps)
-    moe.run_pipeline(corpus_name=ds, top_k=25, save_path=save_path)
+    sp = save_path / dataset
+    moe.run_pipeline(corpus_name=ds, top_k=25, save_path=sp, dataset=dataset)
     return ds
 
 if __name__ == "__main__":

@@ -198,7 +198,7 @@ class Experts:
         results = self.search_query(queries, top_k=top_k, batch_size=batch_size)
         return results.compute_score(ground_truth, k=top_k)
     
-    def run_pipeline(self, corpus_name: str, top_k: int, save_path: Path, batch_size: int = 100) -> None:
+    def run_pipeline(self, corpus_name: str, top_k: int, save_path: Path, batch_size: int = 100, force: bool = False, dataset="test") -> None:
         """generates the score dataframes for a give corpus. The (query, scores) pair can be used to train the router model.
 
         Args:
@@ -210,16 +210,21 @@ class Experts:
         softmax = lambda x: np.exp(x) / np.sum(np.exp(x)) if np.sum(np.exp(x)) > 0 else x
         l1_normalization = lambda x: x / np.sum(x) if np.sum(x) > 0 else x
         if self.datahandler is None:
-            self.datahandler = DataHandler(corpus_name)
+            self.datahandler = DataHandler(corpus_name, force=force)
             
         # Load raw data
         raw_queries = self.datahandler.load_queries()
-        ground_truth = self.datahandler.load_qrels()
+        ground_truth = self.datahandler.load_qrels( dataset=dataset )
+        if ground_truth is None:
+            print(f"No '{dataset}' qrels available for dataset {corpus_name}.")
+            return
+        
         
         # Prepare lists aligned by query ID
-        query_ids = list(raw_queries.keys())
+        # Filter queries to keep only those that are in the ground truth
+        query_ids = [qid for qid in raw_queries.keys() if qid in ground_truth]
         queries_text = [raw_queries[qid]["text"] for qid in query_ids]
-        gt_list = [ground_truth.get(qid, {}) for qid in query_ids]
+        gt_list = [ground_truth[qid] for qid in query_ids]
         
         self.build_indices(corpus_name, force=False, save=True)
         
@@ -228,8 +233,8 @@ class Experts:
         df = pd.DataFrame.from_dict(results, orient='index', columns=ret_expert_names)
         # Normalize scores
         nomrlized_columns = []
-        for expert in ret_expert_names:
-            for norm in ['l1', 'softmax']:
+        for norm in ['l1', 'softmax']:
+            for expert in ret_expert_names:
                 nomrlized_columns.append(f"{expert}_{norm}")
         normilized_scores = {}
         for q_idx, scores in results.items():

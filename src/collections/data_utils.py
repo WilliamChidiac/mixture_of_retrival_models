@@ -87,7 +87,7 @@ class DataHandler:
     """
     Handles downloading, caching, and loading of BeIR datasets.
     """
-    def __init__(self, dataset_name: str, root_data_dir: Path = _root_data_dir, temp_dir: str = "temp"):
+    def __init__(self, dataset_name: str, root_data_dir: Path = _root_data_dir, temp_dir: str = "temp", force: bool = False) -> None:
         """
         Initialize the DataHandler.
 
@@ -104,15 +104,17 @@ class DataHandler:
         self.documents_path = self.raw_corpus_dir / "documents.json" 
         self.queries_results_dir = self.raw_corpus_dir / "queries_results_id"
         self.queries_path = self.queries_results_dir / "queries.json"
-        self.results_path = os.path.join(self.queries_results_dir, "results.json")
+        self.results_path = self.queries_results_dir / "results"
+        self.results_path.mkdir(parents=True, exist_ok=True)
+        self.available_qrel = []
         
-        self._download_and_cache()
+        self._download_and_cache(force=force)
 
-    def _download_and_cache(self) -> None:
+    def _download_and_cache(self, force=False) -> None:
         """
         Downloads the dataset if not already present and caches it in the specified structure.
         """
-        if os.path.exists(self.raw_corpus_dir) and os.path.exists(self.documents_path):
+        if not force and self.documents_path.exists() and self.queries_path.exists() and len(os.listdir(self.results_path)) > 0:
             print(f"Dataset {self.dataset_name} already exists in {self.raw_corpus_dir}")
             return
 
@@ -151,11 +153,13 @@ class DataHandler:
                 
         # 3. Results (Qrels)
         qrels_dir = data_path / "qrels"
-        res_fil = "test.tsv"
-        if (qrels_dir / res_fil).exists():
-                qrels = Qrels(file=(qrels_dir / res_fil))
-                qrels.save_to_json(Path(self.results_path))
-                extraction += 1
+        res_files = ["test", "train"]
+        for res_fil in res_files:
+            if (qrels_dir / f'{res_fil}.tsv').exists():
+                    qrels = Qrels(file=(qrels_dir / f'{res_fil}.tsv'))
+                    qrels.save_to_json(Path(self.results_path / f"{res_fil}.json"))
+                    self.available_qrel.append(res_fil)
+                    extraction += 1
             
         # Cleanup
         if extraction < 3:
@@ -176,7 +180,7 @@ class DataHandler:
         """
         return json.load(open(corpus_path if corpus_path else self.documents_path, 'r'))
 
-    def load_queries(self, queries_path:Path = None) -> Dict[str, str]:
+    def load_queries(self, queries_path:Path = None) -> Dict[str, Dict[str, str]]:
         """
         Loads queries from the cached file.
 
@@ -184,11 +188,11 @@ class DataHandler:
             queries_path (Path, optional): Path to the queries file. If None, uses the default queries path.
 
         Returns:
-            Dict[str, str]: A dictionary mapping query IDs to query text.
+            Dict[str, Dict[str, str]]: A dictionary mapping query IDs to query text.
         """
         return json.load(open(queries_path if queries_path else self.queries_path, 'r'))
 
-    def load_qrels(self, qrels_path: Path = None, delimiter : str = '\t') -> Dict[str, Dict[str, int]]:
+    def load_qrels(self, qrels_path: Path = None, dataset='test', delimiter : str = '\t') -> Dict[str, Dict[str, int]]:
         """
         Loads qrels (relevance judgments) from the cached file.
 
@@ -201,8 +205,12 @@ class DataHandler:
             Dict[str, Dict[str, int]]: A dictionary mapping query IDs to a dictionary of 
                                        document IDs and their relevance scores.
         """
-        return Qrels(file=(qrels_path if qrels_path else Path(self.results_path)), delimiter=delimiter).qrels
-
+        res_path = self.results_path / f"{dataset}.json"
+        if not res_path.exists():
+            return None
+        qrels_file = qrels_path if qrels_path else res_path
+        return Qrels(file=qrels_file, delimiter=delimiter).qrels
+    
     @staticmethod
     def print_available_datasets() -> None:
         """
