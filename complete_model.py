@@ -45,13 +45,13 @@ class Model:
     
     def load_router(self, path: Path) -> None:
         """Loads the router model from the specified path."""
-    if path.exists():
-        self.router.load_model(path)
-        self.router.is_trained = True
-        print(f"Router chargé depuis {path}")
-    else:
-        self.router.is_trained = False
-        print(f"Aucun router trouvé à {path}, fusion simple sera utilisée")
+        if path.exists():
+            self.router.load_model(path)
+            self.router.is_trained = True
+            print(f"Router chargé depuis {path}")
+        else:
+            self.router.is_trained = False
+            print(f"Aucun router trouvé à {path}, fusion simple sera utilisée")
 
 
     
