@@ -44,12 +44,16 @@ class Model:
             self.qrels[query_text] = rel_doc        
     
     def load_router(self, path: Path) -> None:
-        """Loads the router model from the specified path.
-
-        Args:
-            path (Path): Directory path to load the router model from.
-        """
+        """Loads the router model from the specified path."""
+    if path.exists():
         self.router.load_model(path)
+        self.router.is_trained = True
+        print(f"Router chargé depuis {path}")
+    else:
+        self.router.is_trained = False
+        print(f"Aucun router trouvé à {path}, fusion simple sera utilisée")
+
+
     
     def load_experts(self) -> None:
         """Loads all expert models."""
@@ -94,19 +98,26 @@ class Model:
         return final_results
     
     def search(self, exp_res: Dict[str, List[List[str]]] = None) -> Dict[str, List[str]]:
-        """Performs a search using the MOE model for the given queries.
-
-        Returns:
-            Dict[str, List[str]]: Dictionary mapping each query to its top_k results.
-        """
         query = list(self.queries.values())
-        weights = self.router.get_weights(query)
-        weights_dict = {expert: weights[:, idx].tolist() for idx, expert in enumerate(self.experts.experts.keys())}
+        
+        
+        # ✅ Vérifier si le router est entraîné
+        if hasattr(self.router, "get_weights") and getattr(self.router, "is_trained", False):
+            # Poids appris pour chaque requête
+            weights = self.router.get_weights(query)
+            weights_dict = {expert: weights[:, idx].tolist() for idx, expert in enumerate(self.experts.experts.keys())}
+            print("Router entraîné : utilisation des poids appris")
+        else:
+            # Fusion simple si router non entraîné
+            weights_dict = {expert: [1.0]*len(query) for expert in self.experts.experts.keys()}
+            print("Router non entraîné : utilisation de fusion simple")
+        
         if exp_res is None:
-            exp_res = self.get_res_per_expert(query)
+             exp_res = self.get_res_per_expert(query)
+        
         final_results = self.merge_results(exp_res, weights_dict, query)
         return final_results
-    
+
     def compute_score_per_query(self, res:Union[Dict[str, List[str]], List[List[str]]]) -> Dict[str, Dict[str, float]]:
         """Computes evaluation scores for each query based on the results and ground truth.
 
@@ -167,20 +178,32 @@ def main():
     experts = ex.Experts(**ir_models)
     router = rt.MOERouter()
 
-    datasets = ["scifact", "fiqa"]  # ceux qui ont bien marché chez toi
+    datasets = ["scifact", "fiqa"]  # datasets exploitables
 
     for ds in datasets:
         print(f"\n=== Benchmark on {ds} ===")
         model = Model(router, experts, corpus_name=ds)
-        model.load_router(curr_dir / "run" / "run_1")
 
+        # --- Chargement du router entraîné si disponible ---
+        router_path = curr_dir / "run" / "run_1"  # chemin du router entraîné
+        if router_path.exists():
+            model.load_router(router_path)
+            print(f"Router entraîné chargé depuis {router_path}")
+        else:
+            print("Aucun router entraîné trouvé, fusion simple utilisée.")
+
+        # --- Charger les experts ---
         model.load_experts()
+
+        # --- Lancer le benchmark ---
         benchmark_scores = model.benchmark_results()
 
+        # --- Affichage des scores ---
         import json
         print(json.dumps(benchmark_scores, indent=4))
 
 if __name__ == "__main__":
     main()
+
 
     
