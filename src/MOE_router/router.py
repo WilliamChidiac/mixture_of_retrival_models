@@ -144,7 +144,8 @@ def train(model: MOERouter, train_df: pd.DataFrame, batch_size: int = 32, lr: fl
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     query_text = train_df['query'].tolist()
-    query_embeddings = model.embedding_model.encode(query_text, convert_to_tensor=True).cpu().numpy()
+    print("Generating query embeddings...")
+    query_embeddings = model.embedding_model.encode(query_text, convert_to_tensor=True, show_progress_bar=True).cpu().numpy()
     
     full_train_df = pd.DataFrame()
     full_train_df['label'] = list(zip(*(train_df[labels_name].values.T)))
@@ -176,6 +177,11 @@ def train(model: MOERouter, train_df: pd.DataFrame, batch_size: int = 32, lr: fl
         model.train()
         for i in tqdm(range(0, len(epoch_df), batch_size), desc=f"Epoch {epoch+1}"):
             batch_df = epoch_df.iloc[i:i+batch_size]
+            
+            # Skip batches with only 1 sample to avoid BatchNorm error
+            if len(batch_df) <= 1:
+                continue
+                
             batch_embeddings = torch.tensor(np.stack(batch_df['query_embedding'].values)).to(device)
             batch_labels = torch.tensor(list(batch_df['label'].values)).to(device)
             
@@ -226,7 +232,7 @@ def train(model: MOERouter, train_df: pd.DataFrame, batch_size: int = 32, lr: fl
     return model
         
 
-def test_model(model: MOERouter, test_df: pd.DataFrame, score_norm: str = 'l1', batch_size: int = 32) -> pd.DataFrame:
+def test_model(model: MOERouter, test_df: pd.DataFrame, score_norm: str = 'l1', batch_size: int = 32) -> Tuple[pd.DataFrame, float]:
     """
     Test the MOE Router model.
 
@@ -238,6 +244,7 @@ def test_model(model: MOERouter, test_df: pd.DataFrame, score_norm: str = 'l1', 
 
     Returns:
         pd.DataFrame: DataFrame with test results including true weights and predicted weights.
+        float: Accuracy of the router on the test set.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -263,10 +270,19 @@ def test_model(model: MOERouter, test_df: pd.DataFrame, score_norm: str = 'l1', 
             res_file['predicted_weights'].extend(predicted_weights.tolist())
             predicted_classes = np.argmax(predicted_weights, axis=1)
             true_classes = np.argmax(test_labels, axis=1)
-            correct += (predicted_classes == true_classes).sum()
-            total += len(batch_df)        
-    accuracy = correct / total
+            
+            # Identify cases where experts have equal scores (e.g. 0.5, 0.5)
+            is_equal = np.isclose(test_labels[:, 0], test_labels[:, 1])
+            
+            # Filter out equal cases for accuracy calculation
+            valid_indices = ~is_equal
+            
+            if valid_indices.sum() > 0:
+                correct += (predicted_classes[valid_indices] == true_classes[valid_indices]).sum()
+                total += valid_indices.sum()
+                
+    accuracy = correct / total if total > 0 else 0.0
     print(f"Test Accuracy: {accuracy:.4f}")
-    return pd.DataFrame(res_file)
+    return pd.DataFrame(res_file), accuracy
     
     
