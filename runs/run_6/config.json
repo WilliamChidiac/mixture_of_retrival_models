@@ -1,0 +1,15 @@
+{
+    "train_score_paths": [
+        "./data/scores/train/scifact_topk25_scores.csv"
+    ],
+    "test_score_paths": [
+        "data/scores/test/fiqa_topk25_scores.csv"
+    ],
+    "epochs": 15,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "run": 6,
+    "score_norm": "softmax",
+    "total_accuracy_on_weights_prediction": 0.676954732510288,
+    "train_val_split": 0.8
+}
