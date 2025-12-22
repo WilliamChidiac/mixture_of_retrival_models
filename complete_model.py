@@ -6,7 +6,8 @@ sys.path.append(str(curr_dir))
 from typing import List, Dict, Union, Tuple
 import numpy as np
 import pandas as pd
-
+import argparse
+import json
 from src.IR_models.dense_model import dense as dm
 from src.IR_models.sparse_model import sparse as sm
 from src.MOE_router import experts as ex
@@ -17,7 +18,7 @@ from train_router import train
 curr_path = Path(__file__).parent
 _data_path = curr_path / 'data'
 class Model:
-    def __init__(self, router : rt.MOERouter, experts: ex.Experts, data_path: Path = _data_path, corpus_name: str = "fiqa", top_k: int = 25):
+    def __init__(self, router : rt.MOERouter, experts: ex.Experts, data_path: Path = _data_path, corpus_name: str = "fiqa", data_type: str = "train", top_k: int = 25):
         """ Initializes the MOE Model with a router and expert models.
 
         Args:
@@ -27,7 +28,7 @@ class Model:
             corpus_name (str, optional): _name of the corpus. Defaults to "fiqa".
             top_k (int, optional): _number of top results to consider. Defaults to 25.
         """
-        
+        assert data_type in ["train", "test"], "data_type must be either 'train' or 'test'"
         self.router : rt.MOERouter = router
         self.experts : ex.Experts = experts
         self.top_k = top_k
@@ -159,22 +160,34 @@ class Model:
             all_scores[model_name] = avg_scores
         return all_scores
     
-def main():
+def main(args=None):
+    data_path = Path(args.data_path)
+    run_path = Path(args.run_path) / f"run_{args.run_id}"
     ir_models = {
-        "sparse": sm.BM25Expert(data_path=_data_path),
-        "dense": dm.DenseExpert(data_path=_data_path)
+        "sparse": sm.BM25Expert(data_path=data_path),
+        "dense": dm.DenseExpert(data_path=data_path)
     }
-    experts = ex.Experts(**ir_models)
-    router = rt.MOERouter()
-    model = Model(router, experts, corpus_name='trec-covid')
-    model.load_router(curr_dir / "run" / "run_5")
-    model.load_experts()
-    benchmark_scores = model.benchmark_results()
-    import json 
-    print(json.dumps(benchmark_scores, indent=4))
+    all_scores = {}
+    save_path = run_path / "benchmark_results.json"
+    for corpus in args.corpus_names:
+        print(f"Evaluating corpus: {corpus}")
+        experts = ex.Experts(**ir_models)
+        router = rt.MOERouter()
+        model = Model(router, experts, corpus_name=corpus)
+        model.load_router(run_path)
+        model.load_experts()
+        benchmark_scores = model.benchmark_results()
+        print(f"Benchmark scores for {corpus}: {benchmark_scores}")
+        all_scores[corpus] = benchmark_scores
+    open(run_path / "benchmark_results.json", "w").write(json.dumps(all_scores, indent=4))
     
-# if __name__ == "__main__":
-    # main()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_path", type=str, default=str(_data_path), help="Path to the data directory.")
+    parser.add_argument("--corpus_names", nargs='+', type=str, required=True, help="Name of the corpus to use.")
+    parser.add_argument("--run_path", type=str, default=str(curr_dir / "runs"), help="Path to the trained router model directory.")
+    parser.add_argument("--run_id", type=str, required=True, help="Run identifier for the trained router model.")
+    main(args=parser.parse_args())
 
 
     

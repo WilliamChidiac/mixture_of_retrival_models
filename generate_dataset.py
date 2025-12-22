@@ -6,7 +6,7 @@ from src.IR_models.dense_model import dense
 from src.IR_models.sparse_model import sparse
 from pathlib import Path
 
-data_sets = [ "trec-covid", "quora", "fiqa", "scidocs",]
+data_sets = ['scifact']
 try:
     file_path = Path(__file__).parent
 except:
