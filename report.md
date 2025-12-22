@@ -243,3 +243,13 @@ Given more time, we would have expanded our analysis with the following experime
 
 ## 12. Conclusion
 We successfully implemented a Mixture of Experts framework for Information Retrieval. By training a neural router to dynamically assign weights to Sparse (BM25) and Dense experts based on the query's semantic content, we created a flexible system that leverages the strengths of both paradigms. The router demonstrated high accuracy in predicting expert performance, suggesting that this hybrid approach is a promising direction for building robust search systems that generalize well across different types of user queries.
+
+## 13. References
+
+**Sentence-BERT (all-mpnet-base-v2 & all-MiniLM-L6-v2)**
+*   Reimers, N., & Gurevych, I. (2019). Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks. *Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing (EMNLP-IJCNLP)*, 3982–3992.
+*   Song, K., Tan, X., Qin, T., Lu, J., & Liu, T.-Y. (2020). MPNet: Masked and Permuted Pre-training for Language Understanding. *Advances in Neural Information Processing Systems*, 33, 16857–16867.
+*   Wang, W., Wei, F., Dong, L., Bao, H., Yang, N., & Zhou, M. (2020). MiniLM: Deep Self-Attention Distillation for Task-Agnostic Compression of Pre-Trained Transformers. *Advances in Neural Information Processing Systems*, 33, 5776–5788.
+
+**Mixture of Experts (MOE): A Big Data Perspective**
+*   https://arxiv.org/abs/2501.16352
